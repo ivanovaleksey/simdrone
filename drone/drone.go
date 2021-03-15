@@ -41,6 +41,7 @@ func (d *Drone) Start(ctx context.Context, moves <-chan types.DroneMove) error {
 				return err
 			}
 			if res.Ok {
+				time.Sleep(res.Duration /10)
 				fmt.Printf("%d %s %.3f %s\n", d.id, res.Timestamp.Format(time.RFC3339), res.Speed, res.Conditions)
 			}
 		}
@@ -52,6 +53,7 @@ type MoveResult struct {
 	Speed      float64
 	Timestamp  time.Time
 	Conditions types.TrafficConditions
+	Duration   time.Duration
 }
 
 func (d *Drone) makeMove(ctx context.Context, move types.DroneMove) (MoveResult, error) {
@@ -59,6 +61,14 @@ func (d *Drone) makeMove(ctx context.Context, move types.DroneMove) (MoveResult,
 		d.lastMove = &move
 		return MoveResult{}, nil
 	}
+
+	lastMove := *d.lastMove
+	speed, duration := calcSpeed(lastMove, move)
+	if speed == 0 {
+		speed = d.currentSpeed
+	}
+	d.lastMove = &move
+	d.currentSpeed = speed
 
 	nearbys, err := d.storage.FindNearbyStations(ctx, move.Position)
 	if err != nil {
@@ -68,29 +78,23 @@ func (d *Drone) makeMove(ctx context.Context, move types.DroneMove) (MoveResult,
 		return MoveResult{}, nil
 	}
 
-	lastMove := *d.lastMove
-	speed := calcSpeed(lastMove, move)
-	if speed == 0 {
-		speed = d.currentSpeed
-	}
-
 	res := MoveResult{
 		Ok:         true,
 		Speed:      speed,
 		Timestamp:  move.Timestamp,
+		Duration:   duration,
 		Conditions: types.RandomTrafficConditions(),
 	}
 
-	d.lastMove = &move
-	d.currentSpeed = speed
 	return res, nil
 }
 
-func calcSpeed(prev, next types.DroneMove) float64 {
+func calcSpeed(prev, next types.DroneMove) (speed float64, flightDuration time.Duration) {
 	distanceBetween := distance.Between(prev.Position, next.Position)
-	timeBetween := next.Timestamp.Sub(prev.Timestamp).Seconds()
+	flightDuration = next.Timestamp.Sub(prev.Timestamp)
+	timeBetween := flightDuration.Seconds()
 	if timeBetween == 0 {
-		return 0
+		return 0, 0
 	}
-	return distanceBetween / timeBetween
+	return distanceBetween / timeBetween, flightDuration
 }

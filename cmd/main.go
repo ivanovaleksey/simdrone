@@ -5,6 +5,7 @@ import (
 	"github.com/ivanovaleksey/simdrone/dispatcher"
 	"github.com/ivanovaleksey/simdrone/storage"
 	"github.com/pkg/errors"
+	"io"
 	"log"
 	"math/rand"
 	"net/http"
@@ -35,34 +36,44 @@ func main() {
 	signal.Notify(sign, syscall.SIGTERM)
 
 	log.Printf("PID %d\n", os.Getpid())
-	log.Println("starting")
-	if err := disp.Start(ctx); err != nil {
-		log.Fatal(errors.Wrap(err, "dispatcher error"))
-	}
-	log.Println("started")
-
-	<-sign
-	log.Println("closing")
-
 	done := make(chan error)
 	go func() {
 		defer close(done)
-		done <- disp.Close()
+		log.Println("starting")
+		if err := disp.Start(ctx); err != nil {
+			log.Printf("dispatcher error %v\n", err)
+			done <- err
+		}
 	}()
 
-	const closeTimeout = 10 * time.Second
+	select {
+	case <-sign:
+	case <-done:
+	}
+
+	if err := closeApp(ctx, disp); err != nil {
+		log.Printf("closed with err %v\n", err)
+	}
+	log.Println("closed")
+}
+
+func closeApp(ctx context.Context, app io.Closer) error {
+	const closeTimeout = 5 * time.Second
+	done := make(chan error)
+
+	go func() {
+		defer close(done)
+		log.Println("closing")
+		done <- app.Close()
+	}()
+
 	ctx, cancel := context.WithTimeout(ctx, closeTimeout)
 	defer cancel()
 
-	var closeErr error
 	select {
-	case closeErr = <-done:
+	case err := <-done:
+		return err
 	case <-ctx.Done():
-		closeErr = ctx.Err()
-	}
-	if closeErr == nil {
-		log.Println("closed")
-	} else {
-		log.Printf("closed with err %v\n", closeErr)
+		return ctx.Err()
 	}
 }

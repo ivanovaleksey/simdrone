@@ -6,15 +6,17 @@ import (
 	"github.com/ivanovaleksey/simdrone/pkg/types"
 	"log"
 	"sync"
+	"time"
 )
 
 type Dispatcher struct {
 	storage       Storage
 	nearbyService drone.Storage
 
-	wg     sync.WaitGroup
-	cancel context.CancelFunc
-	// stations []types.Station
+	cancel    context.CancelFunc
+	dronesWg  sync.WaitGroup
+	watcherWg sync.WaitGroup
+	watcherCh chan time.Time
 }
 
 type Storage interface {
@@ -27,10 +29,11 @@ type Drone interface {
 	Start()
 }
 
-func New(storage Storage, nearby drone.Storage) Dispatcher {
-	return Dispatcher{
+func New(storage Storage, nearby drone.Storage) *Dispatcher {
+	return &Dispatcher{
 		storage:       storage,
 		nearbyService: nearby,
+		watcherCh:     make(chan time.Time),
 	}
 }
 
@@ -42,11 +45,14 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 		return err
 	}
 
+	d.watcherWg.Add(1)
+	go d.timeWatcher(ctx)
+
 	for _, droneID := range droneIDs {
-		d.wg.Add(1)
+		d.dronesWg.Add(1)
 
 		go func(id types.DroneID) {
-			defer d.wg.Done()
+			defer d.dronesWg.Done()
 
 			err := d.startDrone(ctx, id)
 			if err != nil {
@@ -55,12 +61,32 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 			}
 		}(droneID)
 	}
+
+	<-ctx.Done()
 	return nil
+}
+
+func (d *Dispatcher) timeWatcher(ctx context.Context) {
+	defer d.watcherWg.Done()
+
+	for {
+		select {
+		case <-ctx.Done():
+			time.Sleep(10 * time.Second)
+			return
+		case ts := <-d.watcherCh:
+			if ts.Hour() == 8 && ts.Minute() == 10 {
+				d.cancel()
+				return
+			}
+		}
+	}
 }
 
 func (d *Dispatcher) Close() error {
 	d.cancel()
-	d.wg.Wait()
+	d.dronesWg.Wait()
+	d.watcherWg.Wait()
 	return nil
 }
 
@@ -77,6 +103,13 @@ func (d *Dispatcher) startDrone(ctx context.Context, droneID types.DroneID) erro
 		defer close(droneMoves)
 
 		for i := range moves {
+			select {
+			case <-ctx.Done():
+				return
+			case d.watcherCh <- moves[i].Timestamp:
+			default:
+			}
+
 			select {
 			case <-ctx.Done():
 				return
